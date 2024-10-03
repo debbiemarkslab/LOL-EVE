@@ -1,0 +1,26 @@
+{
+"training_parameters": {
+    "batch_size"                :   16,
+    "epochs"                    :   10,
+    "lr": 1e-5,
+    "max_positional_embedding_size": 1010,
+    "val_split": 0.1,
+    "num_layers": 12,
+    "num_embd": 768,
+    "n_head":12,
+    "sequences"                 :  "sequences.parquet",
+    "tokenizer_dir"             :  "path_to_tokenizer",
+    "embeddings_file" : "gene_embeddings.npz", 
+    "use_weighted_sampler": 0
+},
+"logging_parameters": {
+    "prefix": "100_percent",
+    "model_output": "model_output",
+    "scratch":"data_storage"
+},
+"development_parameters":{
+    "test_on" : 0,
+    "wandb_on": 1,
+    "num_gpus": 8
+}
+}
