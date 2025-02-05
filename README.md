@@ -1,21 +1,30 @@
 # LOL-EVE: Predicting Promoter Variant Effects from Evolutionary Sequences
 
-This repository contains the code and data for the paper "LOL-EVE: Predicting Promoter Variant Effects from Evolutionary Sequences" submitted to ICLR 2024.
+This repository contains the code and data for the paper "LOL-EVE: A Genomic Language Model for Zero-Shot Prediction of Promoter Indel Effects" submitted to ICML 2025.
 
 ## Abstract
 
-Genetic studies reveal extensive disease-associated variation across the human
-genome, predominantly in noncoding regions, such as promoters. Quantifying
-the impact of these variants on disease risk is crucial to our understanding of
-the underlying disease mechanisms and advancing personalized medicine. However, current computational methods struggle to capture variant effects, particularly those of insertions and deletions (indels), which can significantly disrupt
-gene expression. To address this challenge, we present LOL-EVE (Language Of
-Life across EVolutionary Effects), a conditional autoregressive transformer model
-trained on 14.6 million diverse mammalian promoter sequences. Leveraging evolutionary information and proximal genetic context, LOL-EVE predicts indel variant effects in human promoter regions. We introduce three new benchmarks for
-indel variant effect prediction in promoter regions, comprising the identification of
-causal eQTLs, prioritization of rare variants in the human population, and understanding disruptions of transcription factor binding sites. We find that LOL-EVE
-achieves state-of-the-art performance on these tasks, demonstrating the potential
-of region-specific large genomic language models and offering a powerful tool for
-prioritizing potentially causal non-coding variants in disease studies.
+Disease-associated genetic variants occur extensively
+across the human genome, predominantly
+in noncoding regions like promoters. While crucial
+for understanding disease mechanisms, current
+methods struggle to predict effects of insertions
+and deletions (indels) that can disrupt
+gene expression. We present LOL-EVE (Language
+Of Life for Evolutionary Variant Effects),
+a conditional autoregressive transformer trained
+on 13.6 million mammalian promoter sequences.
+By leveraging evolutionary patterns and genetic
+context, LOL-EVE enables zero-shot prediction
+of indel effects in human promoters. We introduce
+three new benchmarks for promoter indel
+prediction: ultra rare variant prioritization, causal
+eQTL identification, and transcription factor binding
+site disruption analysis. LOL-EVE’s state of
+the art performance across these tasks suggests
+the potential of region-specific genomic language
+models for identifying causal non-coding variants
+in disease studies.
 
 ## Repository Structure
 
@@ -28,12 +37,11 @@ prioritizing potentially causal non-coding variants in disease studies.
     ├── benchmarks
     │   ├── causal_eqtls
     │   │   └── plot.ipynb
-    │   ├── gnomad_indel_freq
-    │   │   └── plot.ipynb
+    │   ├── gnomad_ultra_rare
+    │   │   └── plot_icml.ipynb
     │   └── tfbs_disruption
-    │       ├── get_consistent_variable_expression.py
     │       ├── get_mutations.py
-    │       └── plot.ipynb
+    │       └── plot_icml.ipynb
     └── model
         ├── generate_tokenizer.py
         ├── models.py
