@@ -1,291 +1,285 @@
 import argparse
-from argparse import ArgumentParser
 import logging
+import json
 import torch
-from pytorch_lightning import Trainer
-from models import PromEVEModel, InferenceSequenceDataModuleLLR
 import torch.nn.functional as F
 from transformers import PreTrainedTokenizerFast
 from tqdm import tqdm
 import pandas as pd
-import itertools as it
-from Bio import SeqIO
-from Bio.Seq import PromEVEModel
-import glob
-import os
-from collections import Counter
-import numpy as np
+from models import (
+    LOLEVE, 
+    InferenceSequenceDataModuleLLR,
+)
+from train_lightening import detect_gpu_architecture
 
-
-def prep_variants(variants):
-
-    def create_variant_seq(row):
-        
-        max_length = 1000
-        pos = row['POS']
-        ref = row['REF']
-        alt = row['ALT'] if row['ALT'] != '.' else ''
-        wt_sequence = row['WT_SEQUENCE']
-        ref_len = len(ref)
-        alt_len = len(alt)
-        variant_pos = pos - row['WT_SEQUENCE_START']
-
-        # Skip if the variant sequence would exceed the max_length
-        if variant_pos + len(alt) > max_length:
-            print(f"Skipping variant at position {pos} for {row['PROMOTER_GENE']} as it exceeds the max length of {max_length} bp.")
-            ref_seq = ''
-            variant_seq = ''
-        else:
-            # Adjust the window size based on the variant's position
-            left_window = min(variant_pos, (max_length - max(ref_len, alt_len)) // 2)
-            right_window = min(len(wt_sequence) - variant_pos - ref_len, max_length - left_window - max(ref_len, alt_len))
-
-            start = max(0, variant_pos - left_window)
-            end_ref = min(len(wt_sequence), variant_pos + ref_len + right_window)
-            
-            ref_seq = wt_sequence[start:end_ref]
-            variant_seq = wt_sequence[start:variant_pos] + alt + wt_sequence[variant_pos + ref_len:end_ref]
-
-            # Ensure the sequences are of equal length without adding blanks
-            if len(variant_seq) < len(ref_seq):
-                variant_seq += ref_seq[len(variant_seq):]
-            elif len(variant_seq) > len(ref_seq):
-                variant_seq = variant_seq[:len(ref_seq)]
-
-            try:
-                assert ' ' not in ref_seq, ref_seq
-                assert ' ' not in variant_seq, variant_seq
-                assert ref_seq != variant_seq, f'Sequences are the same. Variant pos: {variant_pos}, Ref: {ref}, Alt: {alt}'
-                assert len(ref_seq) == len(variant_seq) > 0, f'Sequence empty or unequal length: WT_S:{len(ref_seq)}, ALT_S:{len(variant_seq)}, REF:{ref}, ALT:{alt}'
-                assert len(ref_seq) == len(variant_seq) <= 1000, f'Sequence too long: WT_S:{len(ref_seq)}, ALT_S:{len(variant_seq)}, REF:{ref}, ALT:{alt}'
-            except AssertionError as e:
-                print(f"Assertion failed: {str(e)}")
-                print(f"Processing variant: {row['PROMOTER_GENE']} at position {row['POS']}")
-                print(f"Variant position in WT_SEQUENCE: {variant_pos}")
-                print(f"WT_SEQUENCE length: {len(wt_sequence)}")
-                print(f"ref_seq length: {len(ref_seq)}")
-                print(f"variant_seq length: {len(variant_seq)}")
-                print(f"ref_seq: {ref_seq}")
-                print(f"variant_seq: {variant_seq}")
-                ref_seq = ''
-                variant_seq = ''
-
-        return {
-            'wt_seq': ref_seq,
-            'variant_seq': variant_seq,
-            'gene': row['PROMOTER_GENE'],
-            'species': row['SPECIES'],
-            'clade': row['CLADE'],
-            'REF': ref,
-            'ALT': alt,
-            'CHROM': row['CHROM'],
-            'POS': row['POS']
-        }
-    
-    variants =  variants.apply(create_variant_seq, axis=1).tolist()
-    return variants
-
-
-
-def calculate_llr(model, tokenizer, dataloader):
+def calculate_llr(model, dataloader, normalize=False):
+    """Calculate log-likelihood ratios using new scoring method"""
     model.eval()
-
-    # Define the complement mapping
+    device = model.device
+    
+    sos_token = model.tokenizer.convert_tokens_to_ids('[SOS]')
+    eos_token = model.tokenizer.convert_tokens_to_ids('[EOS]')
+    pad_token = model.tokenizer.pad_token_id
+    
     complement_map = {
-        tokenizer.vocab['a']: tokenizer.vocab['t'],  # A -> T
-        tokenizer.vocab['t']: tokenizer.vocab['a'],  # T -> A
-        tokenizer.vocab['c']: tokenizer.vocab['g'],  # C -> G
-        tokenizer.vocab['g']: tokenizer.vocab['c']   # G -> C
+        model.tokenizer.vocab['A']: model.tokenizer.vocab['T'],
+        model.tokenizer.vocab['T']: model.tokenizer.vocab['A'],
+        model.tokenizer.vocab['C']: model.tokenizer.vocab['G'],
+        model.tokenizer.vocab['G']: model.tokenizer.vocab['C']
     }
-    start_token = tokenizer.convert_tokens_to_ids('start')
-    end_token = tokenizer.convert_tokens_to_ids('end')
-
+    
     llr_results = []
 
+    def compute_sequence_loss(input_ids):       
+        outputs = model(input_ids)
+        logits = outputs.logits[:, :-1]
+        labels = input_ids.clone()
+
+        start_positions = (input_ids == sos_token).nonzero(as_tuple=False)
+        end_positions = (input_ids == eos_token).nonzero(as_tuple=False)
+        
+        batch_size, seq_length = input_ids.size()
+        position_indices = torch.arange(seq_length, device=device).expand(batch_size, -1)
+
+        start_mask = position_indices >= (start_positions[:, 1] + 1).unsqueeze(1)
+        end_mask = position_indices < end_positions[:, 1].unsqueeze(1)
+        pad_mask = (labels != pad_token)  
+
+        # Combine masks and apply
+        valid_positions = start_mask & end_mask & pad_mask
+        labels = torch.where(valid_positions, labels, torch.tensor(-100, device=labels.device))
+
+        labels = labels[:, 1:]
+
+        
+        loss = F.cross_entropy(
+            logits.reshape(-1, logits.size(-1)),
+            labels.reshape(-1),
+            reduction='none',
+            ignore_index=-100
+        )
+
+        loss = loss.reshape(batch_size, -1)
+        valid_positions = (labels != -100).float()
+       	 
+        # loss = loss.reshape(batch_size, -1)
+        # loss_mask = valid_positions.float()
+        
+        if normalize:
+            #print('NORMALIZE')
+            sequence_lengths = (valid_positions.sum(dim=1))
+            sequence_loss = (loss * valid_positions).sum(dim=1) / sequence_lengths
+            #print(f"Sequence Lengths: {sequence_lengths}")
+            #print(f"Raw Loss: {(loss * valid_positions).sum(dim=1)}")
+            #print(f"Normalized Loss: {sequence_loss}")
+        else:
+            sequence_loss = (loss * valid_positions).sum(dim=1)  
+        return sequence_loss
+    
+
+    def create_reverse_complement(input_ids):
+        batch_size = input_ids.size(0)
+        reverse_ids = input_ids.clone()
+        
+        for batch_idx in range(batch_size):
+            sequence_part = input_ids[batch_idx, model.sequence_start:]
+            end_pos = (sequence_part == eos_token).nonzero(as_tuple=True)[0]
+            
+            if len(end_pos) == 0:
+                continue
+                
+            end_pos = end_pos[0].item() + model.sequence_start
+            seq = sequence_part[1:end_pos-model.sequence_start]
+            
+            complemented = torch.tensor([complement_map.get(n.item(), n.item()) 
+                                       for n in seq], device=device)
+            reversed_comp = torch.flip(complemented, dims=[0])
+            
+            reverse_ids[batch_idx, model.sequence_start+1:model.sequence_start+1+len(reversed_comp)] = reversed_comp
+        
+        return reverse_ids
+
     with torch.no_grad():
-        for batch_idx, batch in enumerate(tqdm(dataloader, desc="Calculating LLR")):
-            wt_input_ids = batch['wt_input_ids'].to(model.device)
-            variant_input_ids = batch['variant_input_ids'].to(model.device)
-
-            # Function to compute log-likelihood for a batch of input sequences
-            def compute_log_likelihood(input_ids):
-                batch_size, seq_len = input_ids.size()
-                
-                # Find start and end positions for each sequence in the batch
-                start_positions = (input_ids == start_token).nonzero(as_tuple=True)[1]
-                end_positions = (input_ids == end_token).nonzero(as_tuple=True)[1]
-                
-
-                
-                if len(start_positions) != batch_size or len(end_positions) != batch_size:
-                    print("  WARNING: Number of start/end tokens doesn't match batch size!")
-                    for i, seq in enumerate(input_ids):
-                        seq_start = (seq == start_token).nonzero(as_tuple=True)[0]
-                        seq_end = (seq == end_token).nonzero(as_tuple=True)[0]
-
-                # Create masks for valid sequences and compute sequence lengths
-                valid_mask = (start_positions < end_positions) & (start_positions < seq_len - 1) & (end_positions > 0)
-                if not valid_mask.any():
-                    print("  ERROR: No valid sequences in this batch!")
-                    return torch.full((batch_size,), float('nan'), device=model.device)
-
-                seq_lengths = end_positions[valid_mask] - start_positions[valid_mask] - 1
-                max_seq_length = seq_lengths.max().item()
-
-                # Prepare forward sequences
-                forward = input_ids[valid_mask]
-                forward_start = start_positions[valid_mask]
-                forward_end = end_positions[valid_mask]
-
-                # Prepare reverse-complement sequences
-                reverse = forward.clone()
-                for i, (start, end) in enumerate(zip(forward_start, forward_end)):
-                    sequence_part = reverse[i, start+1:end]
-                    complemented = torch.tensor([complement_map[n.item()] for n in sequence_part], 
-                                                device=reverse.device)
-                    reverse[i, start+1:end] = torch.flip(complemented, dims=[0])
-
-                # Pad sequences to max_seq_length
-                forward_padded = torch.full((valid_mask.sum(), max_seq_length + 2), 3, 
-                                            dtype=forward.dtype, device=forward.device)
-                reverse_padded = torch.full((valid_mask.sum(), max_seq_length + 2), 3, 
-                                            dtype=reverse.dtype, device=reverse.device)
-
-                for i, (f_start, f_end, r_start, r_end) in enumerate(zip(forward_start, forward_end, forward_start, forward_end)):
-                    forward_padded[i, :f_end-f_start+1] = forward[i, f_start:f_end+1]
-                    reverse_padded[i, :r_end-r_start+1] = reverse[i, r_start:r_end+1]
-
-                # Calculate logits and labels for forward and reverse sequences
-                outputs_forward = model(forward_padded)
-                outputs_reverse = model(reverse_padded)
-                
-                logits_forward = outputs_forward.logits[:, :-1].reshape(-1, outputs_forward.logits.size(-1))
-                logits_reverse = outputs_reverse.logits[:, :-1].reshape(-1, outputs_reverse.logits.size(-1))
-                
-                labels_forward = forward_padded[:, 1:].reshape(-1)
-                labels_reverse = reverse_padded[:, 1:].reshape(-1)
-
-                # Compute log-likelihood (negative cross-entropy loss)
-                loss_forward = F.cross_entropy(logits_forward, labels_forward, reduction='none', ignore_index=3)
-                loss_reverse = F.cross_entropy(logits_reverse, labels_reverse, reduction='none', ignore_index=3)
-
-                # Reshape losses to batch size and sequence length
-                loss_forward = loss_forward.view(valid_mask.sum(), -1)
-                loss_reverse = loss_reverse.view(valid_mask.sum(), -1)
-
-                # Compute average loss for each sequence
-                avg_loss_forward = loss_forward.sum(dim=1) / seq_lengths
-                avg_loss_reverse = loss_reverse.sum(dim=1) / seq_lengths
-
-                # Average over both forward and reverse directions
-                avg_loss = (avg_loss_forward + avg_loss_reverse) / 2
-
-                # Prepare final result
-                log_likelihoods = torch.full((batch_size,), float('nan'), device=model.device)
-                log_likelihoods[valid_mask] = -avg_loss  # Negative to represent log-likelihood
-
-                return log_likelihoods
-
-            # Compute log-likelihoods for WT and variant sequences
+        for batch in tqdm(dataloader, desc="Calculating LLR"):
             try:
-                wt_log_likelihood = compute_log_likelihood(wt_input_ids)
-                variant_log_likelihood = compute_log_likelihood(variant_input_ids)
-
-                # Calculate LLR
-                llr = wt_log_likelihood - variant_log_likelihood 
-                llr_results.extend(llr.tolist())
+                wt_ids = batch['wt_input_ids'].to(device)
+                var_ids = batch['variant_input_ids'].to(device)
+                
+                wt_loss = compute_sequence_loss(wt_ids)
+                var_loss = compute_sequence_loss(var_ids)
+                
+                wt_reverse = create_reverse_complement(wt_ids)
+                var_reverse = create_reverse_complement(var_ids)
+                
+                wt_reverse_loss = compute_sequence_loss(wt_reverse)
+                var_reverse_loss = compute_sequence_loss(var_reverse)
+                
+                wt_avg_loss = (wt_loss + wt_reverse_loss) / 2
+                var_avg_loss = (var_loss + var_reverse_loss) / 2
+                
+                # wt - var
+                # if llr + (var is path), then positive score and var must be less likely
+                # if llr - (var is good), then negative score and var must be more likely
+                llr = -(var_avg_loss - wt_avg_loss)
+                
+                # Save both averaged and forward-only LLRs
+                llr_results.extend([(llr.item(), -(var_loss.item() - wt_loss.item())) 
+                                  for llr, var_loss, wt_loss in zip(llr, var_loss, wt_loss)])
+                
             except Exception as e:
-                print(f"Error in batch {batch_idx}: {str(e)}")
-                llr_results.extend([float('nan')] * len(wt_input_ids))
-
+                logging.error(f"Error in batch: {str(e)}")
+                llr_results.extend([float('nan')] * len(wt_ids))
     return llr_results
 
-def score_variants(model_checkpoint, tokenizer_path, variants, embedding_file, batch_size, prefix):
-    tokenizer = PreTrainedTokenizerFast(tokenizer_file=f"{tokenizer_path}/tokenizer.json",
-                                        unk_token="[UNK]",
-                                        sep_token="[SEP]",
-                                        pad_token="[PAD]",
-                                        cls_token="[CLS]")
-
-    variants_data = prep_variants(variants)
-
-    wt_sequences = [v['wt_seq'].lower() if v['wt_seq'] else '' for v in variants_data]
-    variant_sequences = [v['variant_seq'].lower() if v['variant_seq'] else '' for v in variants_data]
-    gene_tokens = [v['gene'].lower() if v['gene'] else '' for v in variants_data]
-    species_tokens = [v['species'].lower() if v['species'] else '' for v in variants_data]
-    clade_tokens = [v['clade'].lower() if v['clade'] else '' for v in variants_data]
-    ref = [v['REF'] if v['REF'] else '' for v in variants_data]
-    alt = [v['ALT'] if v['ALT'] else '' for v in variants_data]
-    pos = [v['POS'] if v['POS'] else '' for v in variants_data]
-    chrom = [v['CHROM'] if v['CHROM'] else '' for v in variants_data]
-
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(device)
-    data_module = InferenceSequenceDataModuleLLR(batch_size, None, tokenizer, .1, 1010, None, None, 768, device, None)
-    data_module.set_sequences(wt_sequences, variant_sequences, gene_tokens, species_tokens, clade_tokens, True)
-
-    model = PromEVEModel(tokenizer, num_layers=12, num_embd=768, num_heads=12, max_positional_embedding_size=1010, lr=1e-5, embeddings_file=embedding_file, model_device=device)
-    model.prepare_model(data_module.vocab_size)
-    checkpoint = torch.load(model_checkpoint)
-    model.load_state_dict(checkpoint['state_dict'])
-
-    model.to(device)
-    model = torch.compile(model)
-    val_loader = data_module.val_dataloader()
-    llr_per_variant = calculate_llr(model, tokenizer, val_loader)
-
-    # Replace None with blank strings
-    llr_per_variant = [str(llr) if llr is not None else '' for llr in llr_per_variant]
-
-    return llr_per_variant
-
-
-def check_variants(genome_path, variants):
-
-    genome = SeqIO.to_dict(SeqIO.parse(genome_path, "fasta"))
-
-    for _, row in variants.iterrows():
-        ref = str(row['REF']).upper()
-        chrom = row['CHROM']
-
-        sequence_pos = abs(row['POS'] - row['WT_SEQUENCE_START'])
-        pos = row['POS'] - 1
+def prep_variants(variants, experiment_type):
+    """Extract sequences and metadata based on experiment type."""
+    def create_variant_seq(row):
+        base_dict = {
+            'wt_seq': row['WT'].upper() if pd.notna(row['WT']) else '',
+            'variant_seq': row['VAR'].upper() if pd.notna(row['VAR']) else '',
+            'gene': '[MASK]',
+            'species': '[MASK]',
+            'clade': '[MASK]'
+        }
         
-        sequence = row['WT_SEQUENCE']
-        print(sequence)
-        genome_value = str(genome[chrom][pos:len(ref)+pos].seq).upper()
+        if experiment_type == 'all':
+            base_dict.update({
+                'gene': row['GENE'].lower() if pd.notna(row['GENE']) else '[MASK]',
+                'species': row['SPECIES'].lower() if pd.notna(row['SPECIES']) else '[MASK]',
+                'clade': row['CLADE'].lower() if pd.notna(row['CLADE']) else '[MASK]'
+            })
+        elif experiment_type == 'gene_only':
+            base_dict['gene'] = row['GENE'].lower() if pd.notna(row['GENE']) else '[MASK]'
+        elif experiment_type == 'species_only':
+            base_dict['species'] = row['SPECIES'].lower() if pd.notna(row['SPECIES']) else '[MASK]'
+        elif experiment_type == 'clade_only':
+            base_dict['clade'] = row['CLADE'].lower() if pd.notna(row['CLADE']) else '[MASK]'
+        
+        return base_dict
 
-        assert  genome_value == ref, f'Variant {chrom}:{pos}-{pos+len(ref)} not found in genome, REF: {ref}, Genome: {genome_value}'
-        assert sequence[sequence_pos:len(ref)+sequence_pos] == ref, f'Variant not found in sequence, REF:{ref}, sequence:{sequence[sequence_pos:len(ref)+sequence_pos]}, {row}'
-    print('Finished validating variants!')
+    return variants.apply(create_variant_seq, axis=1).tolist()
 
-    return variants
-
-def main(variants, checkpoint, tokenizer_path, genome_path, output_file, embedding_file, prefix):
-    batch_size = 16
-    variants = pd.read_csv(variants)
-    #variants = check_variants(genome_path, variants)
-    llr_per_variant = score_variants(checkpoint, tokenizer_path, variants, embedding_file, batch_size, prefix)
+def score_variants_ablation(config, variants_path, model_checkpoint, output_prefix, normalize=False):
+    """Score variants using different control code combinations"""
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
     
-    if not llr_per_variant:
-        variants['score'] = ''
+    training_params = config['training_parameters']
+    dev_params = config['development_parameters']
+    
+    logger.info("Loading variants...")
+    variants_df = pd.read_csv(variants_path)
+    
+    required_columns = ['GENE', 'SPECIES', 'CLADE', 'REF', 'ALT', 'WT', 'VAR']
+    missing_columns = [col for col in required_columns if col not in variants_df.columns]
+    if missing_columns:
+        raise ValueError(f"Missing required columns: {missing_columns}")
+    
+    logger.info("Loading tokenizer...")
+    tokenizer = PreTrainedTokenizerFast(
+        tokenizer_file=f"{training_params['tokenizer_dir']}/tokenizer.json",
+        unk_token="[UNK]",
+        sep_token="[SEP]",
+        pad_token="[PAD]",
+        cls_token="[CLS]",
+        mask_token="[MASK]",
+        bos_token="[SOS]",
+        eos_token="[EOS]"
+    )
+    
+    device = torch.device("cuda" if torch.cuda.is_available() and dev_params['num_gpus'] > 0 else "cpu")
+    logger.info(f"Using device: {device}")
+    gpu_settings = detect_gpu_architecture()
+    
+    logger.info("Initializing model...")
+    model = LOLEVE(
+        tokenizer=tokenizer,
+        num_layers=training_params['num_layers'],
+        num_embd=training_params['num_embd'],
+        num_heads=training_params['n_head'],
+        max_positional_embedding_size=training_params['max_positional_embedding_size'],
+        lr=training_params['lr'],
+        weight_decay=training_params['weight_decay'],
+        embeddings_file=training_params['embeddings_file'],
+        model_device=device,
+        gpu_settings=gpu_settings,
+        use_control_codes=dev_params['use_control_codes']
+    )
+    
+    model.prepare_model(len(tokenizer))
+   
+    logger.info("Loading model checkpoint...")
+    checkpoint = torch.load(model_checkpoint, map_location=device)
+    if any(key.startswith("model._orig_mod.") for key in checkpoint['state_dict'].keys()):
+        # Handle compiled model state dict
+        new_state_dict = {}
+        for key, value in checkpoint['state_dict'].items():
+            if key.startswith("model._orig_mod."):
+                new_key = key.replace("model._orig_mod.", "model.")
+                new_state_dict[new_key] = value
+            else:
+                new_state_dict[key] = value
+        model.load_state_dict(new_state_dict)
     else:
-        variants['score'] = llr_per_variant
+        # Regular state dict
+        model.load_state_dict(checkpoint['state_dict'])
     
-    variants.to_csv(output_file, index=False)
+    model.to(device)
+    model.eval()
+    
+    experiments = ['all']
+    batch_size = min(training_params['batch_size'], len(variants_df))
+    
+    for exp_type in experiments:
+        logger.info(f"\nRunning {exp_type} experiment...")
+        variants_data = prep_variants(variants_df, exp_type)
+        
+        data_module = InferenceSequenceDataModuleLLR(
+            batch_size=batch_size,
+            sequence_file=None,
+            tokenizer=tokenizer,
+            val_split=0,
+            max_positional_embedding_size=training_params['max_positional_embedding_size'],
+            cache=None,
+            use_weighted_sampler=False,
+            num_embd=training_params['num_embd'],
+            model_device=device,
+            validation_chromosome=None,
+            num_cpus=2
+        )
+        
+        wt_sequences = [v['wt_seq'] for v in variants_data]
+        variant_sequences = [v['variant_seq'] for v in variants_data]
+        gene_tokens = [v['gene'] for v in variants_data]
+        species_tokens = [v['species'] for v in variants_data]
+        clade_tokens = [v['clade'] for v in variants_data]
+        
+        data_module.set_sequences(
+            wt_sequences, variant_sequences, gene_tokens, 
+            species_tokens, clade_tokens
+        )
+        
+        scores = calculate_llr(model, data_module.val_dataloader(), normalize=normalize)
+        # Unzip the tuples into separate lists
+        avg_scores, forward_scores = zip(*scores)
+        variants_df[f'score_{exp_type}'] = avg_scores
+        variants_df[f'score_{exp_type}_forward'] = forward_scores
+    
+    output_file = f"{output_prefix}_ablation_results.csv"
+    logger.info(f"\nSaving results to {output_file}")
+    variants_df.to_csv(output_file, index=False)
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Score variants")
-    parser.add_argument('--variants', type=str, required=True, help='Path to the variants CSV file')
-    parser.add_argument('--checkpoint_esm', type=str, required=True, help='Path to the ESM checkpoint')
-    parser.add_argument('--tokenizer_path_esm', type=str, required=True, help='Path to the ESM tokenizer')
-    parser.add_argument('--genome_path', type=str, required=True, help='Path to the genome FASTA file')
-    parser.add_argument('--output_file', type=str, required=True, help='Path for the output CSV file')
-    parser.add_argument('--embedding_file', type=str, required=True, help='Path to the embedding file')
-    parser.add_argument('--prefix', type=str, required=True, help='Prefix for output files')
+    parser = argparse.ArgumentParser(description="Run control code ablation experiments")
+    parser.add_argument('--config', type=str, required=True, help='Path to config JSON file')
+    parser.add_argument('--variants', type=str, required=True, help='Path to variants CSV')
+    parser.add_argument('--model_checkpoint', type=str, required=True, help='Path to ESM checkpoint')
+    parser.add_argument('--output_prefix', type=str, required=True, help='Prefix for output file')
+    parser.add_argument('--normalize', action='store_true', help='Normalize scores by length', default=False)
 
     args = parser.parse_args()
 
-    main(args.variants, args.checkpoint_esm, args.tokenizer_path_esm, args.genome_path, args.output_file, args.embedding_file, args.prefix)
-
+    with open(args.config) as f:
+        config = json.load(f)
+    score_variants_ablation(config, args.variants, args.model_checkpoint, args.output_prefix, args.normalize)
