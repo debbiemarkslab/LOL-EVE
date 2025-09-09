@@ -29,7 +29,6 @@ in disease studies.
 ## Repository Structure
 
 ```bash
-.
 ├── LICENSE
 ├── README.md
 ├── requirement.txt
@@ -38,15 +37,23 @@ in disease studies.
     │   ├── causal_eqtls
     │   │   └── plot.ipynb
     │   ├── gnomad_ultra_rare
-    │   │   └── plot_icml.ipynb
+    │   │   └── plot.ipynb
     │   └── tfbs_disruption
     │       ├── get_mutations.py
     │       └── plot_icml.ipynb
-    └── model
-        ├── generate_tokenizer.py
-        ├── models.py
-        ├── sample_config.json
-        ├── score_variants.py
+    ├── configs
+    │   └── example_config.json
+    ├── core
+    │   ├── benchmark_analyzer.py
+    │   ├── benchmark_callback.py
+    │   ├── data.py
+    │   ├── embeddings.py
+    │   ├── __init__.py
+    │   ├── models.py
+    │   ├── scoring.py
+    │   └── utils.py
+    └── scripts
+        ├── score_sequences.py
         └── train.py
 ```
 
@@ -76,6 +83,15 @@ module load shared cuda11.8/toolkit/11.8.0
 ```bash
 pip install -r requirements.txt
 ```
+
+## 🤗 Hugging Face
+
+### Model
+- **[LOL-EVE](https://huggingface.co/Marks-lab/LOL-EVE)** - The main LOL-EVE model
+
+### Datasets
+- **[LOL-EVE-UltraRare](https://huggingface.co/datasets/Marks-lab/LOL-EVE-UltraRare)** - Ultra-rare variant benchmark dataset
+- **[LOL-EVE-eQTL_benchmark](https://huggingface.co/datasets/Marks-lab/LOL-EVE-eQTL_benchmark)** - eQTL benchmark dataset
 
 ### Usage
 
