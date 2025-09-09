@@ -1,6 +1,6 @@
 # LOL-EVE: Predicting Promoter Variant Effects from Evolutionary Sequences
 
-This repository contains the code and data for the paper "LOL-EVE: Predicting Promoter Variant Effects from Evolutionary Sequences" submitted to ICLR 2024.
+This repository contains the code and data for the paper "A Genomic Language Model for Zero-Shot Prediction of Promoter Variant Effects" accepted at MLCB 2025.
 
 ## Abstract
 

@@ -1,0 +1,54 @@
+{
+    "training_parameters": {
+        "total_steps"                :   1000000,
+        "batch_size"                    :   16,
+        "lr": 3e-5,
+        "weight_decay":0.01,
+        "max_positional_embedding_size": 1007,
+        "val_split": 0.1,
+        "validation_chromosome": "chr19",
+        "num_layers": 12,
+        "num_embd": 768,
+        "num_cpus":2,
+        "n_head":12,
+        "sequences"                 :  "/n/scratch/users/c/cos262/updated_data_jan_24/training_seqs_data_promoter_1000.parquet",
+        "tokenizer_dir"             :  "/n/scratch/users/c/cos262/updated_data_jan_24/training_seqs_data_promoter_1000_tokenizer",
+        "embeddings_file" : "/n/scratch/users/c/cos262/data/gene_embeddings_v4.npz",
+     "use_weighted_sampler": 0,
+     "checkpoint_steps": 10000,
+     "position_embedding_type":"adaptive"
+ },
+ "logging_parameters":{
+    "prefix": "100_percent",
+    "model_output": "/n/scratch/users/c/cos262/models/LOLEVE_with_refactor_v.0.3/",
+    "scratch":"/n/scratch/users/c/cos262/",
+    "benchmark_freq": 10000,
+    "benchmark_log_dir": "/n/scratch/users/c/cos262/benchmark_data/benchmark_results/LOLEVE_with_refactor_v.0.3/",
+    "benchmark_datasets": {
+        "eqtl": {
+            "path": "/n/scratch/users/c/cos262/benchmark_data/eqtls_march_ckpt.csv"
+        },
+        "tfbs": {
+            "path": "/n/scratch/users/c/cos262/benchmark_data/tfbs_march_ckpt.csv",
+            "top_genes_path": "/n/scratch/users/c/cos262/benchmark_data/top_1_genes.txt",
+            "bottom_genes_path": "/n/scratch/users/c/cos262/benchmark_data/bottom_1_genes.txt"
+        },
+        "rare": {
+            "path": "/n/scratch/users/c/cos262/benchmark_data/gnomad_1_percentile_march_ckpt.csv",
+            "use_tail_subset": true,
+            "tail_subset": {
+                "percentile": 1.0,
+                "score_column": "LOL-EVE_AF",
+                "output_path": "/n/scratch/users/c/cos262/benchmark_data/gnomad_1_percentile_march_ckpt.csv"
+            }
+        }
+    }
+},
+ "development_parameters":{
+     "test_on" : 0,
+     "wandb_on": 1,
+     "run_id":"s9nggw0t",
+     "num_gpus": 4,
+     "use_control_codes":1
+ }
+}
