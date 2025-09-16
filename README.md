@@ -230,7 +230,7 @@ All statistical analysis and plotting code is found for each respective benchmar
 
 - **[LOL-EVE-UltraRare](https://huggingface.co/datasets/Marks-lab/LOL-EVE-UltraRare)** - Ultra-rare variant benchmark dataset
 - **[LOL-EVE-eQTL_benchmark](https://huggingface.co/datasets/Marks-lab/LOL-EVE-eQTL_benchmark)** - eQTL benchmark dataset
-- **Training data**: Available on Zenodo (link TBD)
+- **[Training data](https://huggingface.co/datasets/Marks-lab/PromoterZoo/blob/main/README.md)** - PromoterZoo Training Data 
 
 
 ## Citation
