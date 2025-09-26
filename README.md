@@ -233,7 +233,8 @@ All statistical analysis and plotting code is found for each respective benchmar
 - **[LOL-EVE-TFBS-Benchmark](https://huggingface.co/datasets/Marks-lab/LOL-EVE-TFBS-Benchmark)** - TFBS benchmark dataset
 
 - **Training data**: 
-- **[PromoterZoo](https://huggingface.co/datasets/Marks-lab/PromoterZoo)** - PromoterZoo
+- **[PromoterZoo](https://huggingface.co/datasets/Marks-lab/PromoterZoo/blob/main/README.md)** - PromoterZoo Training Data 
+
 
 
 ## Citation
